@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 本地运行时产物
+*.log
+*.bak
+*.bak_*
+*_fixed.yml
+*_fixed_nodns.yml
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
