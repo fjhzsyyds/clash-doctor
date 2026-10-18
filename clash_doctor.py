@@ -60,7 +60,7 @@ except ImportError:
 # 多探针 + 强制证书校验，才是真实出网证据。
 PROBES = [
     ("https://www.google.com/generate_204", 204),
-    ("https://api.ipify.org?format=json", 200),
+    ("https://github.com/", 200),
 ]
 PROBE_URL = PROBES[0][0]  # 供节点 delay 测试使用
 
@@ -291,17 +291,24 @@ def probe_direct(proxy_port, url, expect, timeout=15):
         return False, None
 
 
-def link_healthy(mixed_port, require_all=False):
-    """真实出网判定。默认任一个强探针通过即健康。"""
+def link_healthy(mixed_port, require_all=True):
+    """真实出网判定。
+
+    默认要求**全部探针通过**（Google + GitHub）。
+    只要求"任一个通过"会漏判：节点可能只放行部分站点，
+    出现"GitHub 能开、Google 打不开"却被判健康的情况。
+    """
     results = []
     for url, expect in PROBES:
         ok, code = probe_direct(mixed_port, url, expect)
         results.append((url, ok, code))
-        if ok and not require_all:
-            return True, code
+        # 主探针（Google）失败就无需再测，但要跑完才能给准确报告
     for url, ok, code in results:
         vlog(f"  probe {url} -> ok={ok} code={code}")
-    passed = all(r[1] for r in results)
+    if require_all:
+        passed = all(r[1] for r in results)
+    else:
+        passed = any(r[1] for r in results)
     return passed, next((c for _, ok, c in results if ok), None)
 
 
@@ -498,6 +505,12 @@ def measure_all(clash: Clash, timeout=5000):
 
 MAIN_GROUPS = ("节点选择", "Proxy", "PROXY")
 
+# 这些组承接 Google 系流量（www.google.com 走 DOMAIN-KEYWORD,google）。
+# 只切"节点选择"而不切它们，会导致：
+#   - 验证探针打的根本不是候选节点 -> 假阴性
+#   - 表现成"Google 打不开"，但节点本身没问题
+GOOGLE_GROUPS = ("谷歌服务", "Gemini")
+
 
 def dead_groups(clash: Clash, delays):
     """返回当前指向死节点的 Selector 分组列表。"""
@@ -527,7 +540,19 @@ def apply_node(clash: Clash, node, groups):
     return done
 
 
-def pick_and_verify(clash: Clash, delays, mixed_port, max_try=4):
+def verify_stable(mixed_port, times=2, gap=2.0):
+    """连续多次通过才算稳定。节点"闪通"很常见，单次通过不足信。"""
+    for i in range(times):
+        ok, code = link_healthy(mixed_port, require_all=True)
+        if not ok:
+            vlog(f"    稳定性第 {i + 1}/{times} 次未通过 (code={code})")
+            return False
+        if i < times - 1:
+            time.sleep(gap)
+    return True
+
+
+def pick_and_verify(clash: Clash, delays, mixed_port, max_try=6):
     """按延迟排序逐个候选，选中后真实出网验证，通过才锁定。
 
     仅按延迟选点是不可靠的：延迟低 ≠ 能出网。
@@ -548,7 +573,7 @@ def pick_and_verify(clash: Clash, delays, mixed_port, max_try=4):
     for g in dg:
         if g not in targets:
             targets.append(g)
-    for g in ("谷歌服务", "Gemini", "GLOBAL"):
+    for g in GOOGLE_GROUPS + ("GLOBAL",):
         if g not in targets:
             targets.append(g)
 
@@ -558,15 +583,24 @@ def pick_and_verify(clash: Clash, delays, mixed_port, max_try=4):
         if not applied:
             log(f"    该节点不在任何目标分组池内，跳过", "WARN")
             continue
+
+        # 关键：Google 走"谷歌服务"组。若该组没切到候选节点，
+        # 探针测的就不是它，验证结果毫无意义。
+        proxies_now = clash.proxies()
+        primary = next((g for g in MAIN_GROUPS if g in proxies_now), None)
+        gsvc = proxies_now.get("谷歌服务", {}).get("now")
+        if primary and gsvc and gsvc != node and gsvc != primary:
+            log(f"    谷歌服务组仍指向 {gsvc}，验证会失真，跳过", "WARN")
+            continue
+
         vlog(f"    应用到: {applied}")
 
         time.sleep(0.6)
-        ok, code = link_healthy(mixed_port, require_all=False)
-        if ok:
-            log(f"    ✓ 出网验证通过 (code={code})")
+        if verify_stable(mixed_port, times=2, gap=1.5):
+            log(f"    ✓ 出网验证通过（Google + GitHub 双通 ×2）")
             log(f"  ✓ 锁定节点: {node} ({delay}ms) -> {applied}")
             return node
-        log(f"    ✗ 出网失败 (code={code})，换下一个", "WARN")
+        log(f"    ✗ 验证未通过或不稳定，换下一个", "WARN")
 
     log("  所有候选节点均无法真实出网", "ERROR")
     return None

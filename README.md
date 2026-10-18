@@ -124,6 +124,8 @@ schtasks /create /tn "Clash Doctor" /sc minute /mo 30 ^
 | `cannot unmarshal !!seq into string` | **不是语法问题，是类型问题**。Clash 2023 的 `nameserver-policy` 是 `map[string]string`，只接受单个字符串值；订阅若给成列表 `['a','b']` 就报错。改格式没用，必须改值（降级取第一个，或整段删掉） |
 | PyYAML 能解析 ≠ Clash 能解析 | 解析器宽容度不同，要以 API 返回 204 为准 |
 | HTTP 探针假阳性 | 必须用 HTTPS + 证书校验 |
+| **分流组没切导致假阴性** | `www.google.com` 走 `DOMAIN-KEYWORD,google` → 「谷歌服务」组，**不是**「节点选择」组。只切「节点选择」就测 Google，等于没测到候选节点。必须同步切换承接该流量的组 |
+| curl 报 TLS 握手失败但实际是通的 | Windows 的 curl 用 **schannel**，经代理隧道连 google.com 常失败（`schannel: failed to receive handshake`）；同一节点用 OpenSSL（Python/浏览器）却正常。**别拿 curl 当唯一判据**，浏览器和 Python 走的是 OpenSSL/BoringSSL |
 | `urllib` 遇中文报错 | Clash 返回的中文 message 会触发 latin-1 编码异常，改用 `http.client` |
 | PowerShell 控制台 GBK | 打印 emoji/中文节点名会乱码，设 `PYTHONIOENCODING=utf-8` |
 | curl 调本地 API | 必须加 `--noproxy "*"`，否则自己绕进代理 |
